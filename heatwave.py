@@ -19,11 +19,6 @@ from gold.aggregate import daily_aggregate
 from gold.detect import detect_heatwaves, detect_coldwaves
 from gold.format import format_output
 
-
-# ---------------------------------------------------------------------------
-# Orchestration
-# ---------------------------------------------------------------------------
-
 def run(wave_type: str, start_year: int, start_month: int, end_year: int, end_month: int):
     target_months = {
         f"{y}{m:02d}"
@@ -31,6 +26,10 @@ def run(wave_type: str, start_year: int, start_month: int, end_year: int, end_mo
         for m in range(1, 13)
         if (y, m) >= (start_year, start_month) and (y, m) <= (end_year, end_month)
     }
+
+    """The two if conditions use tuple comparison — Python compares tuples element by element, so (2003, 7) >= (2003, 7) is True and (2003, 6) >= (2003, 7) is False. This handles year boundaries correctly — e.g. a range from 2003-11 to 2004-02 correctly includes Nov, Dec, Jan, Feb without any special casing.
+        m:02d is a format specifier meaning "integer, minimum 2 digits, zero-padded" — so month 7 becomes "07" not "7", matching the filename kis_tot_200307 in the archive.
+    """
 
     spark = (
         SparkSession.builder

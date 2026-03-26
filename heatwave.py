@@ -1,3 +1,16 @@
+"""
+KNMI Wave Detector — entry point and CLI.
+
+Orchestrates the full pipeline:
+  Bronze  — stream and extract raw KNMI data from Azure Blob Storage
+  Silver  — load CSVs into Spark, filter to De Bilt, cast types
+  Gold    — aggregate to daily, detect waves, format output
+
+Usage:
+    python heatwave.py heatwave --start-year 2003 --end-year 2003
+    python heatwave.py coldwave --start-year 2012 --end-year 2012 --start-month 1 --end-month 3
+"""
+
 import os
 import platform
 import shutil
@@ -19,17 +32,34 @@ from gold.aggregate import daily_aggregate
 from gold.detect import detect_heatwaves, detect_coldwaves
 from gold.format import format_output
 
+
 def run(wave_type: str, start_year: int, start_month: int, end_year: int, end_month: int):
+    """
+    Execute the full pipeline for the given date range and wave type.
+
+    Builds the set of target month codes, streams and extracts the raw data,
+    runs the Silver and Gold transformations, and prints the results.
+
+    Month codes are zero-padded to match archive filenames (e.g. '200307').
+    Tuple comparison handles year boundaries correctly — a range from 2003-11
+    to 2004-02 includes Nov, Dec, Jan, Feb without any special casing.
+
+    A temporary directory is used for the extracted CSVs and is always cleaned
+    up in the finally block, even if the pipeline raises an exception.
+
+    Args:
+        wave_type:   Either 'heatwave' or 'coldwave'.
+        start_year:  First year of the date range (inclusive).
+        start_month: First month of the date range (inclusive, 1–12).
+        end_year:    Last year of the date range (inclusive).
+        end_month:   Last month of the date range (inclusive, 1–12).
+    """
     target_months = {
         f"{y}{m:02d}"
         for y in range(start_year, end_year + 1)
         for m in range(1, 13)
         if (y, m) >= (start_year, start_month) and (y, m) <= (end_year, end_month)
     }
-
-    """The two if conditions use tuple comparison — Python compares tuples element by element, so (2003, 7) >= (2003, 7) is True and (2003, 6) >= (2003, 7) is False. This handles year boundaries correctly — e.g. a range from 2003-11 to 2004-02 correctly includes Nov, Dec, Jan, Feb without any special casing.
-        m:02d is a format specifier meaning "integer, minimum 2 digits, zero-padded" — so month 7 becomes "07" not "7", matching the filename kis_tot_200307 in the archive.
-    """
 
     spark = (
         SparkSession.builder

@@ -12,7 +12,7 @@ A user provides a date range and chooses a wave type. The application fetches th
 
 The app uses the official KNMI meteorological definitions:
 
-| Wave Type | Rule |
+| Wave | Definition |
 |---|---|
 | Heatwave | At least 5 consecutive days where the daily maximum temperature reaches 25°C or above, of which at least 3 days reach 30°C or above (tropical days) |
 | Coldwave | At least 5 consecutive days where the daily maximum temperature stays below 0°C, of which at least 3 days have a minimum temperature below -10°C (high frost days) |
@@ -22,7 +22,7 @@ The app uses the official KNMI meteorological definitions:
 ## Example Output
 
 ```
-2 heatwave(s) found:
+1 heatwave(s) found:
 +------------+---------------+------------------+-----------------------+---------------+
 | From date  | To date (inc.)| Duration (days)  | Tropical days         | Max temp      |
 +------------+---------------+------------------+-----------------------+---------------+
@@ -84,10 +84,9 @@ The app uses the official KNMI meteorological definitions:
 
 | Component | Technology | Why |
 |---|---|---|
-| Data processing | Apache Spark (PySpark) | Horizontally scalable — the same code runs on a laptop or a 100-node cluster |
-| Data source | Azure Blob Storage | Central, accessible storage for the KNMI archive |
-| CLI | Click (Python) | Simple command-line interface for running heatwave or coldwave detection |
-| Containerisation | Docker | Runs anywhere — no local Java or dependency setup required |
+| Data processing | Apache Spark (PySpark) | DataFrame API runs identically in local mode or on a cluster — no code changes to scale up |
+| CLI | Click (Python) | Clean command-line interface with argument validation built in |
+| Containerisation | Docker | Runs anywhere — no local Java, Hadoop, or Python dependency setup required |
 
 ---
 
@@ -108,9 +107,40 @@ docker run heat-cold coldwave --start-year 2012 --end-year 2012
 The codebase follows the **Medallion Architecture** — a standard data engineering pattern that separates the pipeline into three layers, each with a single responsibility:
 
 ```
-Bronze  — Get the raw data in (fetch and parse)
+Bronze  — Get the raw data in (fetch and parse the .tgz archive)
 Silver  — Make the data trustworthy (clean, filter, type-cast)
 Gold    — Make the data useful (aggregate, detect, format)
 ```
 
-This means any layer can be swapped out independently. Changing the data source only touches bronze. Adding a new detection rule only touches gold. Nothing bleeds between layers.
+Each layer only does its own job. Changing the data source only touches Bronze. Adding a new detection rule only touches Gold. Nothing bleeds between layers.
+
+---
+
+## Known Constraints and Honest Tradeoffs
+
+### Bronze is the scaling ceiling
+
+Bronze streams one `.tgz` file sequentially on one machine. Silver and Gold are fully distributable with Spark, but they wait for Bronze to finish first. No amount of additional machines can speed up a single sequential stream. This is sometimes called the **funnel problem**.
+
+In practice this means the pipeline scales well for the processing logic but not for ingestion. For a demo or analyst tool this is fine. For a production system handling large volumes it is the first thing to address.
+
+### The .tgz is read from the beginning every time
+
+The archive contains decades of data. Even if only 2 months are needed, the stream reads from the 1950s to reach them. This is a property of gzip compression — there is no index to jump ahead. Thread pooling cannot help because there is only one stream.
+
+### The Bronze / Silver / Gold fit
+
+The naming broadly holds but has two honest gaps:
+
+- `gold/aggregate.py` — collapsing 10-minute readings to daily is data normalisation (Silver work), not business logic. It sits in Gold because the project is small enough that the distinction does not matter.
+- `gold/format.py` — formatting for console display is a presentation concern that sits beyond what Gold typically means. In a larger system it would be a separate output or serving layer.
+
+---
+
+## The Natural Next Step
+
+Offload Bronze to a monthly Airflow job that writes Parquet files to Azure Data Lake. The Docker pipeline reads those files directly instead of streaming the archive.
+
+Result: one line changes in `silver/load.py`. Everything else stays the same. The funnel problem is solved, the pipeline becomes genuinely horizontally scalable, and the archive is no longer re-read on every run.
+
+See `docs/cloud_usage.md` for the full hybrid architecture.
